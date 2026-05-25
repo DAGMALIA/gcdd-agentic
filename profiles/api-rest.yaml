@@ -1,0 +1,17 @@
+# Perfil: API REST
+# Estado: 🚧 En desarrollo
+# Contribuciones bienvenidas — ver CONTRIBUTING.md
+#
+# Este perfil implementará un contrato de governance para APIs REST incluyendo:
+# - Naming de endpoints (versionado, kebab-case, pluralizado)
+# - OWASP API Security Top 10 completo
+# - OpenAPI spec obligatoria
+# - Rate limiting y throttling
+# - Autenticación OAuth2/OIDC
+# - Headers de seguridad (CSP, HSTS, X-Frame-Options)
+# - Escaneos SAST/DAST específicos para APIs
+
+version: "0.1.0"
+profile: "api-rest"
+status: "en-desarrollo"
+description: "Contrato de governance para APIs REST con OWASP API Top 10"

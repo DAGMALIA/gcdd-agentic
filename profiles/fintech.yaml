@@ -1,0 +1,8 @@
+# Perfil: Servicios Financieros
+# Estado: 🚧 En desarrollo
+# Contribuciones bienvenidas — ver CONTRIBUTING.md
+
+version: "0.1.0"
+profile: "fintech"
+status: "en-desarrollo"
+description: "Contrato de governance para servicios financieros con PCI-DSS, SOX, audit trails"

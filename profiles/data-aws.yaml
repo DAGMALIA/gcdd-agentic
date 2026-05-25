@@ -1,0 +1,17 @@
+# Perfil: Ingeniería de Datos en AWS
+# Estado: 🚧 En desarrollo
+# Contribuciones bienvenidas — ver CONTRIBUTING.md
+#
+# Este perfil implementará un contrato de governance para data engineering en AWS:
+# - Naming de recursos S3, Glue, Step Functions, DynamoDB
+# - Arquitectura Medallion (raw/curated/product)
+# - Encriptación KMS CMK obligatoria
+# - SCPs (Service Control Policies)
+# - Tags obligatorios por recurso
+# - Validación de versiones de Glue/PySpark
+# - Linaje de datos
+
+version: "0.1.0"
+profile: "data-aws"
+status: "en-desarrollo"
+description: "Contrato de governance para ingeniería de datos en AWS"

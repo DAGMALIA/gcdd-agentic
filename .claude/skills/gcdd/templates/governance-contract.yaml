@@ -1,0 +1,127 @@
+# Contrato de Governance — Plantilla
+# Genera este archivo al iniciar un proyecto con GCDD.
+# Personaliza cada sección según las reglas de tu organización.
+# Las secciones marcadas con [REQUERIDO] son obligatorias.
+# Las secciones marcadas con [OPCIONAL] se agregan según necesidad.
+
+version: "1.0.0"
+profile: "CAMBIAR-nombre-de-tu-perfil"
+description: "CAMBIAR-descripción de tu proyecto"
+
+# ─── [REQUERIDO] CONVENCIONES DE NOMBRES ─────────────────────────────────────
+naming:
+  global:
+    separator: "-"            # CAMBIAR: "-", "_", "."
+    case: "kebab-case"        # CAMBIAR: kebab-case, snake_case, UPPER_CASE, camelCase
+    max_length: 63
+    prefix: "CAMBIAR"         # Prefijo de tu organización
+
+  resources:
+    # Agrega un bloque por cada tipo de recurso que uses.
+    # Elimina los que no apliquen.
+    
+    # Ejemplo para buckets S3:
+    # s3_bucket:
+    #   pattern: "{prefix}-{dominio}-{proposito}-{ambiente}"
+    #   example: "miorg-pagos-raw-dev"
+
+    # Ejemplo para endpoints API:
+    # api_endpoint:
+    #   pattern: "/api/v{version}/{dominio}/{recurso}"
+    #   example: "/api/v1/pagos/transacciones"
+
+    # Ejemplo para tablas de base de datos:
+    # database_table:
+    #   pattern: "{dominio}_{entidad}_{proposito}"
+    #   example: "pagos_transacciones_historial"
+
+# ─── [REQUERIDO] SEGURIDAD ───────────────────────────────────────────────────
+security:
+  encryption:
+    at_rest: "requerido"
+    in_transit: "requerido"
+    key_management: "customer-managed"    # CAMBIAR si tu org usa provider-managed
+    # forbidden:
+    #   - "S3_MANAGED"                    # Agrega métodos de encriptación prohibidos
+    # required:
+    #   - "KMS_CMK"                       # Agrega métodos requeridos
+
+  authentication:
+    public_endpoints: "prohibido"         # CAMBIAR a "permitido" si tienes endpoints públicos
+    allowed_methods: ["OAuth2", "OIDC"]   # CAMBIAR según tu stack
+    # mfa_required_for: ["acceso_prod"]
+
+  authorization:
+    model: "RBAC"                         # CAMBIAR: RBAC, ABAC, o ambos
+    least_privilege: true
+    wildcard_permissions: "prohibido"
+
+# ─── [REQUERIDO] AMBIENTES ───────────────────────────────────────────────────
+environments:
+  allowed: ["dev", "staging", "prod"]     # CAMBIAR según tus ambientes
+  constraints:
+    dev:
+      auto_deploy: true
+      approval_required: false
+    prod:
+      auto_deploy: false
+      approval_required: true
+      # approvers: ["tech-lead", "equipo-seguridad"]
+
+# ─── [OPCIONAL] DOMINIOS ─────────────────────────────────────────────────────
+# domains:
+#   pagos:
+#     description: "Procesamiento de pagos"
+#     subdomains: ["transacciones", "reembolsos"]
+#     owner: "equipo-pagos"
+#     data_classification: "confidencial"
+
+# ─── [OPCIONAL] ARQUITECTURA ─────────────────────────────────────────────────
+# architecture:
+#   patterns:
+#     hexagonal:
+#       when:
+#         - "lógica de dominio compleja"
+#         - "3+ integraciones externas"
+#     event_driven:
+#       when:
+#         - "procesamiento asíncrono"
+#     layered:
+#       when:
+#         - "CRUD simple"
+#         - "MVP"
+#   forbidden:
+#     - pattern: "monolito"
+#       when: "servicios > 3"
+
+# ─── [OPCIONAL] TAGS ─────────────────────────────────────────────────────────
+# tags:
+#   required:
+#     - key: "proyecto"
+#     - key: "dominio"
+#     - key: "ambiente"
+#     - key: "owner"
+
+# ─── [OPCIONAL] ESCANEO ──────────────────────────────────────────────────────
+# scanning:
+#   pre_commit:
+#     required:
+#       - tool: "semgrep"
+#         config: "p/owasp-top-ten"
+#       - tool: "gitleaks"
+
+# ─── [OPCIONAL] OWASP ────────────────────────────────────────────────────────
+# security:
+#   owasp:
+#     api_top_10:
+#       - id: "API1"
+#         name: "Broken Object Level Authorization"
+#         enforce: "todo acceso requiere validación de ownership"
+#         builder_rule: "incluir middleware de auth en cada endpoint"
+
+# ─── [OPCIONAL] DEPLOYMENT ───────────────────────────────────────────────────
+# deployment:
+#   strategy:
+#     default: "blue-green"
+#     allowed: ["blue-green", "canary", "rolling"]
+#     forbidden: ["big-bang"]

@@ -1,0 +1,301 @@
+# Contrato de Governance GCDD — Plantilla de Ejemplo
+# Este archivo define las reglas organizacionales que constrañen todos los artefactos generados por AI.
+# Es consumido por herramientas gobernadas, validadores y agentes.
+# Personaliza este archivo para tu organización y dominio.
+
+version: "1.0.0"
+profile: "ejemplo-fullstack"
+description: "Contrato de governance de ejemplo para una aplicación web fullstack"
+
+# ─── CONVENCIONES DE NOMBRES ──────────────────────────────────────────────────
+naming:
+  global:
+    separator: "-"
+    case: "kebab-case"
+    max_length: 63
+    prefix: "miorg"
+
+  resources:
+    s3_bucket:
+      pattern: "{prefix}-{dominio}-{proposito}-{ambiente}"
+      example: "miorg-pagos-raw-dev"
+      validators:
+        - "sin_mayusculas"
+        - "sin_underscores"
+        - "empieza_con_prefijo"
+
+    api_endpoint:
+      pattern: "/api/v{version}/{dominio}/{recurso}"
+      example: "/api/v1/pagos/transacciones"
+      validators:
+        - "kebab_case"
+        - "recursos_pluralizados"
+        - "versionado"
+
+    database_table:
+      pattern: "{dominio}_{entidad}_{proposito}"
+      example: "pagos_transacciones_historial"
+      validators:
+        - "snake_case"
+        - "entidad_singular"
+
+    iam_role:
+      pattern: "{PREFIX}-ROLE-{DOMINIO}-{SERVICIO}-{ENV}"
+      example: "MIORG-ROLE-PAGOS-LAMBDA-DEV"
+      validators:
+        - "mayusculas"
+        - "empieza_con_prefijo"
+
+    lambda_function:
+      pattern: "{prefix}-{dominio}-{accion}-{ambiente}"
+      example: "miorg-pagos-procesar-dev"
+
+    container_image:
+      pattern: "{registry}/{dominio}/{servicio}:{version}"
+      example: "ecr.miorg.com/pagos/procesador:1.2.3"
+      validators:
+        - "tag_semver"
+        - "sin_latest_en_prod"
+
+# ─── DOMINIOS ─────────────────────────────────────────────────────────────────
+domains:
+  pagos:
+    description: "Procesamiento de pagos y transacciones"
+    subdomains: ["transacciones", "reembolsos", "liquidaciones", "fraude"]
+    owner: "equipo-pagos"
+    data_classification: "confidencial"
+
+  clientes:
+    description: "Gestión de clientes y perfiles"
+    subdomains: ["perfiles", "preferencias", "lealtad", "soporte"]
+    owner: "equipo-clientes"
+    data_classification: "pii"
+
+  operaciones:
+    description: "Operaciones internas y monitoreo"
+    subdomains: ["logistica", "monitoreo", "reportes"]
+    owner: "equipo-ops"
+    data_classification: "interno"
+
+# ─── AMBIENTES ────────────────────────────────────────────────────────────────
+environments:
+  allowed: ["dev", "staging", "prod"]
+  constraints:
+    dev:
+      regions: ["us-east-1", "us-west-2"]
+      auto_deploy: true
+      approval_required: false
+    staging:
+      regions: ["us-east-1"]
+      auto_deploy: false
+      approval_required: true
+      approvers: ["tech-lead"]
+    prod:
+      regions: ["us-east-1"]
+      auto_deploy: false
+      approval_required: true
+      approvers: ["tech-lead", "equipo-seguridad"]
+      requires_compliance_report: true
+
+# ─── POLÍTICAS DE SEGURIDAD ───────────────────────────────────────────────────
+security:
+  encryption:
+    at_rest: "requerido"
+    in_transit: "requerido"
+    key_management: "customer-managed"  # no manejada por el proveedor
+    forbidden:
+      - "S3_MANAGED"
+      - "AES256_DEFAULT"
+    required:
+      - "KMS_CMK"
+      - "TLS_1_2_MINIMUM"
+
+  authentication:
+    public_endpoints: "prohibido"  # sin endpoints sin autenticación
+    allowed_methods: ["OAuth2", "OIDC", "mTLS", "API_KEY_WITH_IAM"]
+    mfa_required_for: ["acceso_prod", "operaciones_admin"]
+    session_timeout_minutes: 30
+
+  authorization:
+    model: "RBAC"  # o ABAC, o ambos
+    least_privilege: true
+    wildcard_permissions: "prohibido"
+    admin_access: "prohibido_en_codigo"  # sin AdministratorAccess, sin *FullAccess
+    service_accounts:
+      require_rotation: true
+      max_key_age_days: 90
+
+  network:
+    public_ip: "prohibido"  # sin IPs públicas en instancias
+    vpc_required: true
+    security_groups:
+      no_open_ingress: true  # sin 0.0.0.0/0 en ingress
+      no_open_egress: false  # egress puede ser abierto en dev
+
+  owasp:
+    api_top_10:
+      - id: "API1"
+        name: "Broken Object Level Authorization"
+        enforce: "todo acceso a recurso requiere verificación de ownership"
+        builder_rule: "incluir middleware de auth en cada endpoint"
+      - id: "API2"
+        name: "Broken Authentication"
+        enforce: "ningún endpoint sin auth a menos que esté whitelisted"
+        builder_rule: "decorador de auth obligatorio"
+      - id: "API3"
+        name: "Broken Object Property Level Authorization"
+        enforce: "control de acceso a nivel de campo en campos sensibles"
+        builder_rule: "serializers de respuesta deben filtrar por rol"
+      - id: "API5"
+        name: "Broken Function Level Authorization"
+        enforce: "funciones admin requieren permisos elevados"
+        builder_rule: "rutas admin en módulo separado con verificación de rol"
+
+    web_top_10:
+      - id: "A03"
+        name: "Injection"
+        enforce: "solo consultas parametrizadas"
+        builder_rule: "nunca generar concatenación de strings para queries"
+      - id: "A07"
+        name: "Cross-Site Scripting"
+        enforce: "encoding de salida en toda input de usuario"
+        builder_rule: "middleware de sanitización auto-incluido"
+
+# ─── ARQUITECTURA ─────────────────────────────────────────────────────────────
+architecture:
+  patterns:
+    hexagonal:
+      aliases: ["ports-and-adapters", "clean-architecture"]
+      when:
+        - "lógica de dominio compleja con múltiples reglas de negocio"
+        - "3+ integraciones externas (bases de datos, APIs, colas)"
+        - "testing es prioridad"
+        - "producto de vida larga (>2 años esperados)"
+      constraints:
+        - "módulo core de dominio tiene CERO imports de infraestructura"
+        - "todo acceso externo a través de ports (interfaces)"
+        - "adapters implementan ports, nunca se llaman directamente"
+        - "inyección de dependencias para todos los adapters"
+      structure:
+        - "src/{dominio}/core/         # entidades, value objects, servicios"
+        - "src/{dominio}/ports/        # interfaces (clases abstractas)"
+        - "src/{dominio}/adapters/     # implementaciones"
+        - "src/{dominio}/app/          # casos de uso / servicios de aplicación"
+
+    event_driven:
+      when:
+        - "procesamiento asíncrono requerido"
+        - "múltiples consumidores del mismo evento"
+        - "consistencia eventual es aceptable"
+        - "microservicios desacoplados"
+      constraints:
+        - "eventos son inmutables después de publicación"
+        - "consumidores deben ser idempotentes"
+        - "dead letter queue requerida para cada consumidor"
+        - "versionado de schema de eventos requerido"
+
+    layered:
+      when:
+        - "operaciones CRUD simples"
+        - "equipo pequeño (<5 desarrolladores)"
+        - "time to market es crítico"
+        - "prototipo o MVP"
+      constraints:
+        - "máximo 4 capas: presentación, aplicación, dominio, infraestructura"
+        - "sin dependencias circulares entre capas"
+        - "cada capa solo depende de la capa directamente abajo"
+
+    medallion:
+      when:
+        - "data product con etapas de transformación"
+        - "flujo raw → limpio → agregado"
+        - "consumo de analytics o BI"
+      constraints:
+        - "cada capa (raw/curated/product) tiene su propio storage"
+        - "capa raw es append-only, nunca se modifica"
+        - "backfill desde raw siempre debe ser posible"
+        - "validación de schema entre capas"
+
+    serverless:
+      when:
+        - "procesamiento disparado por eventos"
+        - "carga variable/impredecible"
+        - "optimización de costos es prioridad"
+      constraints:
+        - "ejecución de función < 15 minutos"
+        - "funciones stateless únicamente"
+        - "cold start aceptable para el caso de uso"
+        - "operaciones idempotentes"
+
+  forbidden:
+    - pattern: "monolito"
+      when: "cantidad_microservicios > 3 AND tamaño_equipo > 10"
+      reason: "restricciones de escalamiento organizacional"
+    - pattern: "base_de_datos_compartida"
+      when: "cantidad_servicios > 1"
+      reason: "acoplamiento entre servicios"
+
+# ─── TAGS / METADATA ──────────────────────────────────────────────────────────
+tags:
+  required:
+    - key: "proyecto"
+      description: "Identificador del proyecto"
+    - key: "dominio"
+      description: "Dominio de negocio"
+    - key: "ambiente"
+      description: "Ambiente de deployment"
+    - key: "owner"
+      description: "Equipo o persona responsable"
+    - key: "centro-costo"
+      description: "Asignación de facturación"
+    - key: "clasificacion-datos"
+      description: "Nivel de sensibilidad de los datos"
+      allowed_values: ["publico", "interno", "confidencial", "pii", "restringido"]
+
+  optional:
+    - key: "ttl"
+      description: "Tiempo de vida para recursos temporales"
+
+# ─── ESCANEO / REQUISITOS DE CI ───────────────────────────────────────────────
+scanning:
+  pre_commit:
+    required:
+      - tool: "semgrep"
+        config: "p/owasp-top-ten"
+        fail_on: "error"
+      - tool: "gitleaks"
+        description: "Detección de secretos"
+        fail_on: "any"
+      - tool: "pip-audit"  # o npm audit, cargo audit
+        fail_on: "high"
+
+  pre_deploy:
+    required:
+      - tool: "trivy"
+        target: "imágenes de contenedor"
+        fail_on: "critical"
+      - tool: "checkov"
+        target: "templates IaC"
+        fail_on: "high"
+
+  post_deploy:
+    recommended:
+      - tool: "owasp-zap"
+        target: "endpoints de staging"
+        schedule: "semanal"
+
+# ─── POLÍTICAS DE DEPLOYMENT ──────────────────────────────────────────────────
+deployment:
+  strategy:
+    default: "blue-green"
+    allowed: ["blue-green", "canary", "rolling"]
+    forbidden: ["big-bang"]
+
+  rollback:
+    automatic: true
+    trigger: "error_rate > 5% OR latency_p99 > 2s"
+
+  compliance:
+    require_report_before_deploy: true
+    require_all_scans_passed: true
+    require_documentation_updated: true

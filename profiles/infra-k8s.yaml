@@ -1,0 +1,8 @@
+# Perfil: Infraestructura Kubernetes
+# Estado: 🚧 En desarrollo
+# Contribuciones bienvenidas — ver CONTRIBUTING.md
+
+version: "0.1.0"
+profile: "infra-k8s"
+status: "en-desarrollo"
+description: "Contrato de governance para infraestructura Kubernetes con pod security, network policies, límites"

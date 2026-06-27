@@ -1,0 +1,517 @@
+# Perfil: Ingeniería de Datos en Azure
+# Estado: ✅ Disponible
+# Versión: 1.0.0
+#
+# Stack: ADLS Gen2 · Azure Data Factory · Azure Synapse Analytics
+#        Azure Databricks · Event Hubs · Azure Key Vault · Microsoft Purview
+
+version: "1.0.0"
+profile: "data-azure"
+status: "disponible"
+description: "Contrato de governance para data engineering en Azure: naming, seguridad, CMK via Key Vault, Managed Identity, Azure Policy y escaneo"
+
+# ─── CONVENCIONES DE NOMBRES ─────────────────────────────────────────────────
+naming:
+  global:
+    separator: "-"
+    case: "kebab-case"
+    max_length: 63
+    prefix: "CAMBIAR"         # Prefijo de tu organización (ej: amx, miorg)
+    note: "Azure tiene restricciones de naming distintas por tipo de recurso. Storage accounts no admiten guiones ni mayúsculas. Ver resource_specific_constraints."
+
+  resource_specific_constraints:
+    storage_account:
+      max_length: 24
+      allowed: "lowercase alphanumeric only — sin guiones ni underscores"
+      pattern: "{prefix}{dominio}{capa}{ambiente}"
+      example: "amxdatarawdev"
+
+    resource_group:
+      max_length: 90
+      pattern: "{PREFIX}-RG-{DOMINIO}-{AMBIENTE}"
+      example: "AMX-RG-DATA-PROD"
+
+    data_factory:
+      max_length: 63
+      pattern: "{prefix}-adf-{dominio}-{ambiente}"
+      example: "amx-adf-data-prod"
+
+    synapse_workspace:
+      max_length: 45
+      pattern: "{prefix}-synapse-{dominio}-{ambiente}"
+      example: "amx-synapse-data-prod"
+
+    databricks_workspace:
+      max_length: 30
+      pattern: "{prefix}-dbw-{dominio}-{ambiente}"
+      example: "amx-dbw-data-prod"
+
+    event_hub_namespace:
+      pattern: "{prefix}-evhns-{dominio}-{ambiente}"
+      example: "amx-evhns-data-prod"
+
+    event_hub:
+      pattern: "{prefix}-evh-{dominio}-{evento}-{ambiente}"
+      example: "amx-evh-pagos-transaccion-prod"
+
+    key_vault:
+      max_length: 24
+      pattern: "{prefix}-kv-{dominio}-{ambiente}"
+      example: "amx-kv-data-prod"
+      note: "El nombre del Key Vault queda en la URL — elegir con cuidado"
+
+    adls_container:
+      pattern: "{capa}"
+      allowed_values: ["raw", "curated", "product", "archive"]
+      note: "Los contenedores de ADLS representan las capas medallion"
+
+    adf_pipeline:
+      pattern: "{accion}_{origen}_{destino}"
+      example: "ingest_api_raw"
+      case: "snake_case"
+
+    managed_identity:
+      pattern: "{PREFIX}-MI-{COMPONENTE}-{AMBIENTE}"
+      example: "AMX-MI-ADF-PROD"
+
+  resources:
+    terraform_internal:
+      case: "snake_case"
+      example: "azurerm_storage_account_raw_dev"
+
+# ─── ARQUITECTURA DE DATOS (MEDALLION) ───────────────────────────────────────
+architecture:
+  pattern: "medallion"
+  layers:
+    raw:
+      storage: "ADLS Gen2 — contenedor 'raw'"
+      description: "Datos sin transformar, append-only"
+      format: ["Parquet", "Avro", "JSON", "Delta Lake"]
+      retention: "indefinido — no se borra raw"
+      access: "solo pipelines ADF/Databricks y auditores"
+
+    curated:
+      storage: "ADLS Gen2 — contenedor 'curated' + Synapse/Databricks"
+      description: "Datos limpios y validados con schema"
+      format: ["Delta Lake", "Parquet"]
+      transformations: "Databricks notebooks o Synapse Spark"
+      access: "pipelines de transformación y analistas autorizados"
+
+    product:
+      storage: "Synapse Analytics (Dedicated Pool) o Synapse Serverless"
+      description: "Datos agregados listos para consumo"
+      format: ["tablas Delta", "vistas en Synapse"]
+      access: "analistas, Power BI, APIs"
+
+  constraints:
+    - "raw es append-only — nunca UPDATE o DELETE en raw"
+    - "backfill siempre posible desde raw"
+    - "cada capa tiene su propio contenedor en ADLS Gen2"
+    - "transformaciones son reproducibles e idempotentes"
+    - "linaje de datos documentado en Microsoft Purview"
+
+  project_layout: |
+    {proyecto}/
+    ├── ingestion/          # ADF pipelines raw → ADLS raw
+    │   ├── pipelines/
+    │   └── linked_services/
+    ├── transformation/     # Databricks notebooks / Synapse Spark
+    │   ├── notebooks/
+    │   └── spark_jobs/
+    ├── serving/            # Synapse views / Power BI datasets
+    │   └── sql_views/
+    ├── orchestration/      # ADF pipelines de orquestación
+    │   └── triggers/
+    ├── infrastructure/     # IaC Terraform (ver infra-terraform.yaml)
+    │   └── terraform/
+    └── tests/
+
+# ─── ORGANIZACIÓN DE SUSCRIPCIONES Y RESOURCE GROUPS ─────────────────────────
+azure_hierarchy:
+  strategy: "suscripcion-por-ambiente"
+  note: "Aislamiento fuerte: dev, staging y prod en suscripciones Azure separadas"
+  management_groups:
+    required: true
+    structure: "Org → Landing Zone → {dominio} → {ambiente}"
+  subscriptions:
+    dev:   "{PREFIX}-DATA-DEV"
+    staging: "{PREFIX}-DATA-STG"
+    prod:  "{PREFIX}-DATA-PROD"
+  resource_groups:
+    strategy: "un RG por componente por ambiente"
+    examples:
+      - "AMX-RG-STORAGE-PROD"
+      - "AMX-RG-ADF-PROD"
+      - "AMX-RG-SYNAPSE-PROD"
+      - "AMX-RG-DATABRICKS-PROD"
+      - "AMX-RG-KEYVAULT-PROD"
+
+# ─── SEGURIDAD ────────────────────────────────────────────────────────────────
+security:
+  # Identidad — Managed Identity sobre Service Principals
+  identity:
+    managed_identity: "requerido para todos los recursos que lo soporten"
+    service_principals:
+      client_secret: "prohibido en código — usar certificados o Managed Identity"
+      rotation_required: true
+      max_secret_age_days: 90
+    entra_id_groups: "asignar roles a grupos, nunca a usuarios directamente en prod"
+    mfa_required: true
+
+  # RBAC — Azure Role Based Access Control
+  rbac:
+    principle: "least_privilege"
+    scope: "mínimo necesario — preferir resource scope sobre subscription scope"
+    forbidden_roles:
+      - "Owner"
+      - "Contributor a nivel de suscripción para pipelines"
+    data_plane_roles:
+      adls: "Storage Blob Data Contributor (no Storage Account Contributor)"
+      key_vault: "Key Vault Secrets User (no Key Vault Administrator)"
+      synapse: "Synapse SQL User (no Synapse Administrator)"
+    custom_roles: "usar cuando los built-in son demasiado amplios"
+
+  # Encriptación — CMK via Azure Key Vault
+  encryption:
+    at_rest: "requerido"
+    key_management: "CMK via Azure Key Vault"
+    environments:
+      dev: "Microsoft-managed keys permitidas"
+      staging: "CMK recomendado"
+      prod: "CMK obligatorio"
+    resources_requiring_cmk:
+      - "Azure Storage Account (ADLS Gen2)"
+      - "Synapse Analytics workspace"
+      - "Azure Databricks"
+      - "Azure Data Factory"
+      - "Azure SQL / Synapse Dedicated Pool"
+    key_vault_config:
+      soft_delete: "requerido — 90 días"
+      purge_protection: "requerido en prod"
+      rbac_authorization: true        # Usar RBAC sobre access policies
+    forbidden:
+      - "azurerm_storage_account sin customer_managed_key en prod"
+      - "azurerm_key_vault con purge_protection_enabled = false en prod"
+      - "azurerm_synapse_workspace sin customer_managed_key en prod"
+
+  # Secretos
+  secrets:
+    manager: "Azure Key Vault"
+    hardcoded: "prohibido"
+    access_pattern: "data.azurerm_key_vault_secret"
+    adf_linked_services: "usar Key Vault linked service — nunca inline credentials"
+    databricks_secrets: "usar Databricks Secret Scopes backed by Azure Key Vault"
+    rotation:
+      required_for: ["connection strings", "API keys externas", "SAS tokens"]
+      period: "90 días"
+    forbidden:
+      - "connection strings en variables de ADF inline"
+      - "storage account keys hardcodeadas"
+      - "SAS tokens de larga duración (> 24h) en código"
+
+  # Red — Private Endpoints y VNet
+  network:
+    private_endpoints: "requerido para todos los servicios PaaS en prod"
+    services_requiring_private_endpoint:
+      - "Azure Storage Account / ADLS Gen2"
+      - "Azure Key Vault"
+      - "Azure Synapse Analytics"
+      - "Azure Databricks (VNet injection)"
+      - "Azure Data Factory (Managed VNet)"
+    public_network_access:
+      storage: "prohibido en prod — public_network_access_enabled = false"
+      key_vault: "prohibido en prod"
+      synapse: "prohibido en prod"
+    nsg_rules:
+      default_deny_all_inbound: true
+      no_allow_from_internet: true
+    vnet_injection:
+      databricks: "requerido en prod"
+      adf_ir: "usar Managed Virtual Network en ADF"
+
+  # Azure Policy (equivalente a AWS SCPs / GCP Org Policies)
+  azure_policy:
+    required_policies:
+      - name: "Require HTTPS on Storage Accounts"
+        effect: "Deny"
+      - name: "Require Secure Transfer on Storage Accounts"
+        effect: "Deny"
+      - name: "Deny public blob access on Storage Accounts"
+        effect: "Deny"
+      - name: "Require CMK on Storage Accounts in prod"
+        effect: "Audit"
+      - name: "Require Managed Identity on ADF"
+        effect: "Audit"
+      - name: "Allowed locations"
+        effect: "Deny"
+        allowed: ["eastus", "westus2", "brazilsouth"]
+
+# ─── TAGS OBLIGATORIOS ───────────────────────────────────────────────────────
+tags:
+  required:
+    - key: "proyecto"
+      description: "Nombre del proyecto"
+    - key: "dominio"
+      description: "Dominio de negocio"
+    - key: "ambiente"
+      allowed_values: ["dev", "staging", "prod"]
+    - key: "owner"
+      description: "Equipo responsable"
+    - key: "centro-costo"
+      description: "Para Cost Management y chargeback"
+    - key: "gestionado-por"
+      value: "terraform"
+    - key: "clasificacion-datos"
+      allowed_values: ["publico", "interno", "confidencial", "pii", "restringido"]
+    - key: "capa"
+      allowed_values: ["raw", "curated", "product", "archive"]
+      applies_to: ["storage_account", "synapse_workspace"]
+
+  enforcement:
+    azure_policy: "Aplicar 'Require tag on resources' policy para las claves obligatorias"
+    example: |
+      locals {
+        common_tags = {
+          proyecto            = var.proyecto
+          dominio             = var.dominio
+          ambiente            = var.ambiente
+          owner               = var.owner
+          "centro-costo"      = var.centro_costo
+          "gestionado-por"    = "terraform"
+          "clasificacion-datos" = var.clasificacion_datos
+        }
+      }
+      resource "azurerm_storage_account" "raw" {
+        name                     = "${var.prefix}${var.dominio}raw${var.ambiente}"
+        resource_group_name      = azurerm_resource_group.storage.name
+        location                 = var.location
+        account_tier             = "Standard"
+        account_replication_type = "GRS"
+        account_kind             = "StorageV2"
+        is_hns_enabled           = true          # ADLS Gen2
+
+        # Seguridad obligatoria
+        https_traffic_only_enabled       = true
+        min_tls_version                  = "TLS1_2"
+        public_network_access_enabled    = false  # Private Endpoint en prod
+        allow_nested_items_to_be_public  = false
+
+        tags = merge(local.common_tags, { capa = "raw" })
+      }
+
+# ─── AMBIENTES ───────────────────────────────────────────────────────────────
+environments:
+  strategy: "suscripcion-por-ambiente"
+  allowed: ["dev", "staging", "prod"]
+  constraints:
+    dev:
+      auto_deploy: true
+      cmk_required: false
+      private_endpoints: false
+      public_network_access: "permitido"
+    staging:
+      auto_deploy: true
+      cmk_required: true
+      private_endpoints: "recomendado"
+      mirrors_prod_config: true
+    prod:
+      auto_deploy: false
+      approval_required: true
+      approvers: ["tech-lead", "data-platform-team", "seguridad"]
+      cmk_required: true
+      private_endpoints: "requerido"
+      public_network_access: "prohibido"
+      requires_compliance_report: true
+      change_window: "lunes-viernes 09:00-17:00 UTC-6"
+
+# ─── ESCANEO Y VALIDACIÓN ────────────────────────────────────────────────────
+scanning:
+  pre_commit:
+    required:
+      - tool: "terraform fmt + validate"
+        command: "terraform fmt -check && terraform validate"
+
+      - tool: "tflint"
+        plugin: "tflint-ruleset-azurerm"
+        config: ".tflint.hcl"
+
+      - tool: "gitleaks"
+        purpose: "Detectar connection strings, SAS tokens y secrets en código"
+        fail_on: "any"
+
+  pre_deploy:
+    required:
+      - tool: "checkov"
+        command: "checkov -d . --framework terraform"
+        fail_on: "high"
+        key_checks:
+          - "CKV_AZURE_3"    # Storage Account secure transfer
+          - "CKV_AZURE_33"   # Storage Account logging
+          - "CKV_AZURE_35"   # Storage Account network default deny
+          - "CKV_AZURE_36"   # Storage Account no public blob access
+          - "CKV_AZURE_110"  # Key Vault purge protection
+          - "CKV_AZURE_42"   # Key Vault soft delete
+          - "CKV2_AZURE_1"   # CMK on Storage Account
+          - "CKV2_AZURE_18"  # CMK on Synapse
+
+      - tool: "tfsec"
+        command: "tfsec . --minimum-severity HIGH"
+
+      - tool: "terraform plan"
+        save_plan: true
+        review_required_for: ["prod"]
+
+    recommended:
+      - tool: "infracost"
+        purpose: "Estimación de costo — especialmente Synapse Dedicated Pool"
+
+  post_deploy:
+    recommended:
+      - tool: "Microsoft Defender for Cloud"
+        purpose: "Secure score y recomendaciones de seguridad"
+      - tool: "Azure Policy compliance dashboard"
+        purpose: "Monitoreo de compliance continuo"
+      - tool: "terraform plan"
+        schedule: "diario"
+        purpose: "Detección de drift"
+
+# ─── SYNAPSE / DATABRICKS — GOVERNANCE ESPECÍFICA ────────────────────────────
+data_compute:
+  synapse_analytics:
+    dedicated_pool:
+      required_for: "workloads de BI con SLA de latencia"
+      pause_when_idle: "requerido en dev/staging — ahorro de costos"
+      cmk: "requerido en prod"
+    serverless:
+      use_for: "exploración ad-hoc y ETL liviano"
+      external_tables: "datos en ADLS Gen2 via credencial Managed Identity"
+
+  databricks:
+    vnet_injection: "requerido en prod"
+    cluster_policies: "requerido — evitar clusters sin límites de costo"
+    secrets: "Databricks Secret Scopes backed by Azure Key Vault"
+    unity_catalog: "recomendado — governance centralizada de datos"
+    no_interactive_clusters_prod: true   # Solo job clusters en prod
+
+  data_factory:
+    managed_vnet: "requerido en prod"
+    linked_services: "usar Key Vault reference — nunca inline credentials"
+    git_integration: "requerido — todos los pipelines en control de versiones"
+    ir_self_hosted: "para conectividad con on-premises"
+
+# ─── CONSTRAINTS PARA EL BUILDER ─────────────────────────────────────────────
+builder_constraints:
+  always_include:
+    versions_tf: |
+      terraform {
+        required_version = "~> 1.5"
+        required_providers {
+          azurerm = {
+            source  = "hashicorp/azurerm"
+            version = "~> 3.0"
+          }
+        }
+      }
+      provider "azurerm" {
+        features {
+          key_vault {
+            purge_soft_delete_on_destroy    = false
+            recover_soft_deleted_key_vaults = true
+          }
+        }
+      }
+
+    storage_account_secure: |
+      resource "azurerm_storage_account" "ejemplo" {
+        name                     = "${var.prefix}${var.dominio}${var.capa}${var.ambiente}"
+        resource_group_name      = var.resource_group_name
+        location                 = var.location
+        account_tier             = "Standard"
+        account_replication_type = "GRS"
+        account_kind             = "StorageV2"
+        is_hns_enabled           = true          # ADLS Gen2
+
+        https_traffic_only_enabled       = true   # Obligatorio
+        min_tls_version                  = "TLS1_2"
+        public_network_access_enabled    = false
+        allow_nested_items_to_be_public  = false
+
+        tags = merge(local.common_tags, { capa = var.capa })
+      }
+
+    key_vault_secure: |
+      resource "azurerm_key_vault" "ejemplo" {
+        name                      = "${var.prefix}-kv-${var.dominio}-${var.ambiente}"
+        location                  = var.location
+        resource_group_name       = var.resource_group_name
+        tenant_id                 = data.azurerm_client_config.current.tenant_id
+        sku_name                  = "standard"
+        soft_delete_retention_days = 90
+        purge_protection_enabled  = true          # Obligatorio en prod
+        enable_rbac_authorization = true          # RBAC sobre access policies
+        tags                      = local.common_tags
+      }
+
+    managed_identity_usage: |
+      resource "azurerm_data_factory" "ejemplo" {
+        name                = "${var.prefix}-adf-${var.dominio}-${var.ambiente}"
+        location            = var.location
+        resource_group_name = var.resource_group_name
+        tags                = local.common_tags
+
+        identity {
+          type = "SystemAssigned"    # Managed Identity — nunca service principal con secret
+        }
+        vsts_configuration { ... }   # Git integration obligatoria
+      }
+
+  never_generate:
+    - "public_network_access_enabled = true en prod"
+    - "allow_nested_items_to_be_public = true"
+    - "purge_protection_enabled = false en prod"
+    - "enable_rbac_authorization = false en Key Vault"
+    - "client_secret = valor_literal"              # SP secret hardcodeado
+    - "storage_account_access_key en linked service ADF"  # Usar Managed Identity
+    - "min_tls_version = TLS1_0 o TLS1_1"
+
+# ─── GUARDIAN — VALIDACIONES DE COMPLIANCE ───────────────────────────────────
+guardian_checks:
+  - id: "AZ-SEC-001"
+    description: "Storage Accounts tienen HTTPS obligatorio y TLS 1.2"
+    check: "checkov -d . --check CKV_AZURE_3"
+    severity: "high"
+
+  - id: "AZ-SEC-002"
+    description: "Key Vaults tienen purge protection habilitada en prod"
+    check: "checkov -d . --check CKV_AZURE_110"
+    severity: "critical"
+
+  - id: "AZ-SEC-003"
+    description: "Storage Accounts no tienen acceso público a blobs"
+    check: "checkov -d . --check CKV_AZURE_36"
+    severity: "critical"
+
+  - id: "AZ-SEC-004"
+    description: "No hay connection strings hardcodeadas"
+    check: "gitleaks detect --source ."
+    severity: "critical"
+
+  - id: "AZ-SEC-005"
+    description: "Storage Accounts tienen public_network_access_enabled = false en prod"
+    check: 'grep -r "public_network_access_enabled" environments/prod --include="*.tf"'
+    severity: "high"
+
+  - id: "AZ-DATA-001"
+    description: "Tags requeridos presentes en todos los recursos"
+    check: 'grep -r "gestionado-por" --include="*.tf" | wc -l > 0'
+    severity: "high"
+
+  - id: "AZ-DATA-002"
+    description: "Data Factory tiene Git integration habilitada"
+    check: 'grep -r "vsts_configuration\|github_configuration" --include="*.tf"'
+    severity: "medium"
+
+  - id: "AZ-IAC-001"
+    description: "checkov no reporta findings HIGH o CRITICAL"
+    check: "checkov -d . --framework terraform --compact"
+    severity: "high"

@@ -1,0 +1,482 @@
+# Perfil: Ingeniería de Datos en GCP
+# Estado: ✅ Disponible
+# Versión: 1.0.0
+#
+# Stack: BigQuery · Cloud Storage · Pub/Sub · Dataflow · Cloud Composer
+#        Vertex AI · Dataplex · Cloud KMS · Secret Manager
+
+version: "1.0.0"
+profile: "data-gcp"
+status: "disponible"
+description: "Contrato de governance para data engineering en GCP: naming, seguridad, encriptación CMEK, IAM con Workload Identity, Org Policies y escaneo"
+
+# ─── CONVENCIONES DE NOMBRES ─────────────────────────────────────────────────
+naming:
+  global:
+    separator: "-"
+    case: "kebab-case"
+    max_length: 63
+    prefix: "CAMBIAR"           # Prefijo de tu organización (ej: amx, miorg)
+    note: "GCP impone lowercase + hyphens en la mayoría de recursos. Sin mayúsculas en nombres de recursos cloud."
+
+  resources:
+    # Google Cloud Storage
+    gcs_bucket:
+      pattern: "{prefix}-{dominio}-{capa}-{ambiente}"
+      examples:
+        - "amx-data-raw-dev"
+        - "amx-pagos-curated-prod"
+      validators:
+        - "lowercase"
+        - "sin_underscores"
+        - "empieza_con_prefijo"
+        - "incluye_capa"         # raw, curated, product, archive
+      forbidden:
+        - "buckets sin ubicación explícita"
+        - "buckets con AllUsers o AllAuthenticatedUsers ACL"
+
+    # BigQuery datasets
+    bq_dataset:
+      pattern: "{dominio}_{capa}_{ambiente}"
+      examples:
+        - "data_raw_dev"
+        - "pagos_curated_prod"
+      case: "snake_case"
+      validators:
+        - "snake_case"
+        - "incluye_capa"
+        - "incluye_ambiente"
+      note: "BigQuery datasets usan snake_case — no admiten guiones"
+
+    # BigQuery tables
+    bq_table:
+      pattern: "{entidad}_{proposito}"
+      examples:
+        - "transacciones_historial"
+        - "clientes_dim"
+      case: "snake_case"
+      forbidden:
+        - "tablas sin descripción en schema"
+        - "tablas sin partition (si > 10GB esperados)"
+
+    # Pub/Sub topics
+    pubsub_topic:
+      pattern: "{prefix}-{dominio}-{evento}-{ambiente}"
+      examples:
+        - "amx-pagos-transaccion-creada-dev"
+        - "amx-data-ingestion-trigger-prod"
+      validators:
+        - "kebab_case"
+        - "nombre_en_pasado_para_eventos"
+
+    # Pub/Sub subscriptions
+    pubsub_subscription:
+      pattern: "{topic_name}-{consumidor}-sub"
+      example: "amx-pagos-transaccion-creada-dev-dataflow-sub"
+
+    # Dataflow jobs
+    dataflow_job:
+      pattern: "{prefix}-{dominio}-{transformacion}-{ambiente}"
+      example: "amx-data-raw-to-curated-prod"
+
+    # Cloud Composer environments
+    composer_environment:
+      pattern: "{prefix}-composer-{dominio}-{ambiente}"
+      example: "amx-composer-data-prod"
+
+    # Service accounts
+    service_account:
+      pattern: "{prefix}-sa-{componente}-{ambiente}"
+      example: "amx-sa-dataflow-prod"
+      max_length: 30              # GCP limita service account IDs a 30 chars
+      validators:
+        - "sin_roles_owner_en_bindings"
+        - "sin_keys_descargadas"
+
+    # Cloud KMS keys
+    kms_key:
+      pattern: "{prefix}-key-{proposito}-{ambiente}"
+      example: "amx-key-bq-cmek-prod"
+
+    # Proyectos GCP
+    project:
+      pattern: "{PREFIX}-{DOMINIO}-{AMBIENTE}"
+      example: "AMX-DATA-PROD"
+      note: "Un proyecto por dominio por ambiente — aislamiento fuerte"
+
+# ─── ARQUITECTURA DE DATOS (MEDALLION) ───────────────────────────────────────
+architecture:
+  pattern: "medallion"
+  layers:
+    raw:
+      storage: "Cloud Storage (GCS)"
+      description: "Datos sin transformar, append-only"
+      format: ["Parquet", "Avro", "JSON", "CSV"]
+      retention: "indefinido — no se borra raw"
+      access: "solo pipelines de ingestion y auditores"
+
+    curated:
+      storage: "BigQuery dataset + Cloud Storage"
+      description: "Datos limpios, validados, con schema"
+      format: ["Parquet en GCS", "tablas BigQuery particionadas"]
+      transformations: "Dataflow o dbt"
+      access: "pipelines de transformación y analistas autorizados"
+
+    product:
+      storage: "BigQuery dataset"
+      description: "Datos agregados listos para consumo"
+      format: ["tablas BigQuery", "vistas materializadas"]
+      access: "analistas, dashboards, APIs"
+
+  constraints:
+    - "raw es append-only — nunca UPDATE o DELETE en raw"
+    - "backfill siempre posible desde raw"
+    - "cada capa tiene su propio dataset BigQuery y bucket GCS"
+    - "transformaciones son reproducibles e idempotentes"
+    - "linaje de datos documentado en Dataplex"
+
+  project_layout: |
+    {proyecto}/
+    ├── ingestion/          # Pipelines raw → GCS raw
+    │   ├── dataflow/
+    │   └── cloud_functions/
+    ├── transformation/     # GCS raw → BigQuery curated
+    │   ├── dataflow/
+    │   └── dbt/
+    ├── serving/            # BigQuery product / vistas
+    │   └── bq_views/
+    ├── orchestration/      # Cloud Composer DAGs
+    │   └── dags/
+    ├── infrastructure/     # IaC Terraform (ver infra-terraform.yaml)
+    │   └── terraform/
+    └── tests/
+
+# ─── SEGURIDAD ────────────────────────────────────────────────────────────────
+security:
+  # IAM — identidades y permisos
+  iam:
+    principle: "least_privilege"
+    service_accounts:
+      no_keys_on_disk: true
+      workload_identity_federation: "requerido_en_cicd"
+      max_roles_per_sa: 3
+      forbidden_roles:
+        - "roles/owner"
+        - "roles/editor"
+        - "roles/iam.securityAdmin"
+    user_access:
+      via_groups: true              # Nunca asignar roles a usuarios directamente en prod
+      mfa_required: true
+    resource_hierarchy:
+      use_folder_iam: true          # Org → Folder → Project → Resource
+      avoid_project_level_iam: "cuando puede ir en folder"
+
+  # Encriptación — CMEK obligatorio en prod
+  encryption:
+    at_rest: "requerido"
+    key_management: "CMEK — Cloud KMS Customer-Managed Encryption Keys"
+    environments:
+      dev: "Google-managed keys permitidas"
+      staging: "CMEK recomendado"
+      prod: "CMEK obligatorio"
+    resources_requiring_cmek:
+      - "BigQuery datasets"
+      - "Cloud Storage buckets"
+      - "Cloud Composer environments"
+      - "Vertex AI datasets"
+      - "Cloud SQL instances"
+    key_rotation:
+      automatic: true
+      period: "90 días"
+    forbidden:
+      - "google_storage_bucket sin encryption block en prod"
+      - "google_bigquery_dataset sin default_encryption_configuration en prod"
+
+  # Secretos
+  secrets:
+    manager: "Google Secret Manager"
+    hardcoded: "prohibido"
+    in_code: "prohibido"
+    access_pattern: "data.google_secret_manager_secret_version"
+    rotation:
+      required_for: ["credenciales de bases de datos", "API keys externas"]
+      period: "90 días"
+    forbidden:
+      - "secrets en variables de entorno de Cloud Functions sin Secret Manager"
+      - "connection strings en código fuente"
+
+  # Red — VPC y controles de perímetro
+  network:
+    vpc_required: true
+    shared_vpc: "recomendado para múltiples proyectos del mismo dominio"
+    vpc_service_controls:
+      required_for: ["prod"]
+      perimeter: "datos sensibles y PII deben estar en un security perimeter"
+    private_google_access: true     # Acceso a APIs GCP sin IP pública
+    firewall_rules:
+      default_deny_ingress: true
+      no_open_0_0_0_0: true
+    cloud_nat: "para egress controlado sin IPs públicas en instancias"
+
+  # Org Policies (equivalente a AWS SCPs)
+  org_policies:
+    required:
+      - constraint: "constraints/compute.requireShieldedVm"
+        description: "VMs deben usar Shielded VM"
+      - constraint: "constraints/iam.disableServiceAccountKeyCreation"
+        description: "Prohibir creación de SA keys — forzar Workload Identity"
+      - constraint: "constraints/storage.uniformBucketLevelAccess"
+        description: "Acceso uniforme en buckets — sin ACLs legacy"
+      - constraint: "constraints/compute.skipDefaultNetworkCreation"
+        description: "No crear VPC default en proyectos nuevos"
+      - constraint: "constraints/gcp.resourceLocations"
+        description: "Restringir regiones permitidas"
+        allowed_locations: ["us-central1", "us-east4", "southamerica-east1"]
+
+# ─── LABELS OBLIGATORIOS (equivalente a tags en AWS) ─────────────────────────
+labels:
+  note: "GCP usa 'labels' no 'tags'. Lowercase, sin espacios, máximo 64 pares."
+  required:
+    - key: "proyecto"
+      description: "Nombre del proyecto"
+    - key: "dominio"
+      description: "Dominio de negocio"
+    - key: "ambiente"
+      allowed_values: ["dev", "staging", "prod"]
+    - key: "owner"
+      description: "Equipo responsable"
+    - key: "centro-costo"
+      description: "Para billing y chargeback"
+    - key: "gestionado-por"
+      value: "terraform"
+    - key: "clasificacion-datos"
+      allowed_values: ["publico", "interno", "confidencial", "pii", "restringido"]
+    - key: "capa"
+      allowed_values: ["raw", "curated", "product", "archive"]
+      applies_to: ["gcs_bucket", "bq_dataset"]
+
+  enforcement:
+    example: |
+      locals {
+        common_labels = {
+          proyecto            = var.proyecto
+          dominio             = var.dominio
+          ambiente            = var.ambiente
+          owner               = var.owner
+          "centro-costo"      = var.centro_costo
+          "gestionado-por"    = "terraform"
+          "clasificacion-datos" = var.clasificacion_datos
+        }
+      }
+      resource "google_storage_bucket" "raw" {
+        name     = "${var.prefix}-${var.dominio}-raw-${var.ambiente}"
+        location = var.region
+        labels   = merge(local.common_labels, { capa = "raw" })
+
+        encryption {
+          default_kms_key_name = google_kms_crypto_key.bucket_key.id
+        }
+        uniform_bucket_level_access = true
+      }
+
+# ─── AMBIENTES ───────────────────────────────────────────────────────────────
+environments:
+  strategy: "un-proyecto-gcp-por-ambiente"
+  note: "Aislamiento fuerte: dev, staging y prod son proyectos GCP separados"
+  allowed: ["dev", "staging", "prod"]
+  constraints:
+    dev:
+      project_suffix: "-dev"
+      auto_deploy: true
+      cmek_required: false
+      vpc_service_controls: false
+    staging:
+      project_suffix: "-stg"
+      auto_deploy: true
+      cmek_required: true
+      mirrors_prod_config: true
+    prod:
+      project_suffix: "-prod"
+      auto_deploy: false
+      approval_required: true
+      approvers: ["tech-lead", "data-platform-team"]
+      cmek_required: true
+      vpc_service_controls: true
+      requires_compliance_report: true
+
+# ─── ESCANEO Y VALIDACIÓN ────────────────────────────────────────────────────
+scanning:
+  pre_commit:
+    required:
+      - tool: "terraform fmt + validate"
+        command: "terraform fmt -check && terraform validate"
+
+      - tool: "tflint"
+        plugin: "tflint-ruleset-google"
+        config: ".tflint.hcl"
+
+      - tool: "gitleaks"
+        purpose: "Detectar service account keys y secrets en código"
+        fail_on: "any"
+
+  pre_deploy:
+    required:
+      - tool: "checkov"
+        command: "checkov -d . --framework terraform"
+        fail_on: "high"
+        key_checks:
+          - "CKV_GCP_1"    # Stackdriver Logging habilitado
+          - "CKV_GCP_25"   # BigQuery dataset no es público
+          - "CKV_GCP_29"   # Storage bucket no es públicamente accesible
+          - "CKV_GCP_62"   # Bucket access logs habilitados
+          - "CKV_GCP_78"   # Cloud KMS key rotation habilitada
+
+      - tool: "tfsec"
+        command: "tfsec . --minimum-severity HIGH"
+
+      - tool: "terraform plan"
+        save_plan: true
+        review_required_for: ["prod"]
+
+    recommended:
+      - tool: "infracost"
+        purpose: "Estimación de costo — BigQuery on-demand vs flat-rate"
+
+  post_deploy:
+    recommended:
+      - tool: "Security Command Center"
+        purpose: "Monitoreo continuo de findings de seguridad"
+      - tool: "terraform plan"
+        schedule: "diario"
+        purpose: "Detección de drift"
+
+# ─── BIGQUERY — GOVERNANCE ESPECÍFICA ────────────────────────────────────────
+bigquery:
+  partitioning:
+    required_for: "tablas > 1GB esperado"
+    preferred: "partition by ingestion time o fecha del evento"
+    forbidden: "tablas sin partición con > 10GB"
+
+  clustering:
+    recommended_for: "queries frecuentes con filtros en columnas de alta cardinalidad"
+
+  schema:
+    descriptions_required: true     # Todas las columnas deben tener description
+    policy_tags:
+      required_for: ["columnas PII", "columnas confidenciales"]
+      taxonomy: "usar Data Catalog taxonomy de la organización"
+
+  access_control:
+    dataset_level: "requerido — sin acceso a nivel de proyecto para analistas"
+    row_level_security: "recomendado para datos multi-tenant"
+    column_level_security: "requerido para columnas PII (policy tags)"
+    authorized_views: "usar para exponer subsets sin dar acceso al dataset completo"
+
+  cost_controls:
+    require_labels_for_billing: true
+    slot_reservations: "recomendado en prod para costos predecibles"
+    max_bytes_billed: "configurar en jobs de transformación"
+
+# ─── CONSTRAINTS PARA EL BUILDER ─────────────────────────────────────────────
+builder_constraints:
+  always_include:
+    versions_tf: |
+      terraform {
+        required_version = "~> 1.5"
+        required_providers {
+          google = {
+            source  = "hashicorp/google"
+            version = "~> 5.0"
+          }
+        }
+      }
+
+    gcs_bucket_secure: |
+      resource "google_storage_bucket" "ejemplo" {
+        name                        = "${var.prefix}-${var.dominio}-${var.capa}-${var.ambiente}"
+        location                    = var.region
+        storage_class               = "STANDARD"
+        uniform_bucket_level_access = true   # Obligatorio — sin ACLs legacy
+        labels                      = local.common_labels
+
+        versioning {
+          enabled = true
+        }
+        encryption {
+          default_kms_key_name = var.kms_key_id    # CMEK obligatorio en prod
+        }
+        lifecycle_rule {
+          condition { age = 365 }
+          action    { type = "SetStorageClass"; storage_class = "NEARLINE" }
+        }
+      }
+
+    bq_dataset_secure: |
+      resource "google_bigquery_dataset" "ejemplo" {
+        dataset_id                  = "${var.dominio}_${var.capa}_${var.ambiente}"
+        location                    = var.region
+        delete_contents_on_destroy  = false    # Protección contra borrado accidental
+
+        default_encryption_configuration {
+          kms_key_name = var.kms_key_id        # CMEK obligatorio en prod
+        }
+        labels = local.common_labels
+      }
+
+    service_account_no_keys: |
+      resource "google_service_account" "dataflow" {
+        account_id   = "${var.prefix}-sa-dataflow-${var.ambiente}"
+        display_name = "Dataflow SA — ${var.ambiente}"
+      }
+      # NO generar google_service_account_key — usar Workload Identity Federation
+
+  never_generate:
+    - "google_service_account_key"             # Usar Workload Identity
+    - "allUsers en IAM bindings"               # Acceso público
+    - "allAuthenticatedUsers en IAM bindings"
+    - "roles/owner en service account binding"
+    - "roles/editor en service account binding"
+    - "google_storage_bucket_acl"              # Usar uniform bucket level access
+
+# ─── GUARDIAN — VALIDACIONES DE COMPLIANCE ───────────────────────────────────
+guardian_checks:
+  - id: "GCP-SEC-001"
+    description: "No hay google_service_account_key en el código"
+    check: 'grep -r "google_service_account_key" --include="*.tf"'
+    severity: "critical"
+    expected: "sin resultados"
+
+  - id: "GCP-SEC-002"
+    description: "Todos los buckets tienen uniform_bucket_level_access = true"
+    check: "checkov -d . --check CKV_GCP_29"
+    severity: "high"
+
+  - id: "GCP-SEC-003"
+    description: "BigQuery datasets no son públicos"
+    check: "checkov -d . --check CKV_GCP_25"
+    severity: "critical"
+
+  - id: "GCP-SEC-004"
+    description: "CMEK habilitado en todos los datasets BigQuery (prod)"
+    check: 'grep -r "default_encryption_configuration" environments/prod --include="*.tf"'
+    severity: "high"
+
+  - id: "GCP-SEC-005"
+    description: "No hay credenciales hardcodeadas"
+    check: "gitleaks detect --source ."
+    severity: "critical"
+
+  - id: "GCP-DATA-001"
+    description: "Labels requeridos presentes en todos los recursos"
+    check: 'grep -r "gestionado-por" --include="*.tf" | wc -l > 0'
+    severity: "high"
+
+  - id: "GCP-DATA-002"
+    description: "Tablas BigQuery con descripción de schema"
+    check: "checkov -d . --check CKV_GCP_80"
+    severity: "medium"
+
+  - id: "GCP-IAC-001"
+    description: "checkov no reporta findings HIGH o CRITICAL"
+    check: "checkov -d . --framework terraform --compact"
+    severity: "high"

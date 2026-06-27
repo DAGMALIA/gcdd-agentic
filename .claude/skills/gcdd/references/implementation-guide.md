@@ -12,28 +12,30 @@ que soporte agentes AI. Esta guía muestra cómo implementarlo en cada plataform
 ### Estructura de archivos
 
 ```
-.claude/
-├── CLAUDE.md                      # Constitución GCDD
-├── governance/
-│   ├── governance-contract.yaml   # Contrato de governance
-│   ├── profiles/
-│   │   ├── data-aws.yaml          # Perfil de dominio
-│   │   └── api-rest.yaml          # Perfiles componibles
+{raíz-del-proyecto}/
+├── CLAUDE.md                      # Constitución GCDD (raíz del proyecto)
+├── .gcdd/                         # Directorio de governance
+│   ├── governance/
+│   │   └── contract.yaml          # Contrato de governance
 │   └── validators/
 │       ├── naming.py              # Validador de nombres
 │       ├── security.py            # Validador de seguridad
 │       └── architecture.py        # Validador de arquitectura
-├── skills/
-│   ├── navigator.md               # Rol: orientar y rutear
-│   ├── specifier.md               # Rol: capturar requerimientos
-│   ├── builder.md                 # Rol: generar artefactos
-│   ├── guardian.md                # Rol: validación de seguridad
-│   ├── steward.md                 # Rol: validación de governance
-│   └── chronicler.md             # Rol: documentación
-└── tools/
-    ├── governed_tools.py          # Herramientas con governance embebido
-    └── mcp_server.py             # Servidor MCP
+└── .claude/                       # Config Claude Code (opcional)
+    ├── skills/                    # Skills de roles (si se usa multi-agente)
+    │   ├── builder.md             # Rol: generar artefactos
+    │   ├── guardian.md            # Rol: validación de seguridad
+    │   └── steward.md             # Rol: validación de governance
+    └── tools/
+        ├── governed_tools.py      # Herramientas con governance embebido
+        └── mcp_server.py         # Servidor MCP (para enforcement estructural)
 ```
+
+Notas:
+- `CLAUDE.md` va en la **raíz del proyecto**, no dentro de `.claude/`
+- El contrato de governance va en `.gcdd/governance/contract.yaml`
+- Los perfiles de dominio (data-gcp.yaml, infra-terraform.yaml, etc.) viven en el
+  repositorio gcdd-agentic — se usan como referencia, no se copian al proyecto
 
 ### Constitución (CLAUDE.md)
 
@@ -42,7 +44,7 @@ que soporte agentes AI. Esta guía muestra cómo implementarlo en cada plataform
 
 ## Contrato de Governance
 Este proyecto sigue GCDD. Todo código generado debe cumplir con
-`.claude/governance/governance-contract.yaml`.
+`.gcdd/governance/contract.yaml`.
 
 ## Reglas No Negociables
 1. Leer el contrato de governance ANTES de generar cualquier código
@@ -59,12 +61,12 @@ ORIENTAR → ESPECIFICAR → CONSTRUIR → VALIDAR → DOCUMENTAR → DESPLEGAR
 ### Ejemplo de validador
 
 ```python
-# .claude/governance/validators/naming.py
+# .gcdd/validators/naming.py
 import yaml
 from pathlib import Path
 
 def load_contract():
-    contract_path = Path(__file__).parent.parent / "governance-contract.yaml"
+    contract_path = Path(__file__).parent.parent / "governance" / "contract.yaml"
     with open(contract_path) as f:
         return yaml.safe_load(f)
 

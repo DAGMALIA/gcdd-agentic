@@ -1,0 +1,633 @@
+# Perfil: Infraestructura como Código — Terraform (Multi-Cloud)
+# Estado: ✅ Disponible
+# Versión: 1.1.0
+# Clouds: AWS · GCP · Azure
+#
+# Uso: referencia este perfil en tu governance-contract.yaml
+# para que el Builder genere Terraform que cumple con governance
+# desde el primer módulo, independientemente del cloud provider.
+
+version: "1.1.0"
+profile: "infra-terraform"
+status: "disponible"
+description: "Contrato de governance para IaC con Terraform multi-cloud: naming, estructura de módulos, seguridad, escaneo y deployment (AWS, GCP, Azure)"
+
+# ─── PROVIDERS SOPORTADOS ────────────────────────────────────────────────────
+providers:
+  aws:
+    source: "hashicorp/aws"
+    version_constraint: "~> 5.0"
+    state_backend: "s3"
+    state_locking: "dynamodb"
+    secret_manager: "AWS Secrets Manager"
+    kms_service: "AWS KMS"
+    iam_model: "IAM Policies + Roles"
+    network_primitive: "VPC"
+    compliance_tool: "AWS Config + Security Hub"
+
+  google:
+    source: "hashicorp/google"
+    version_constraint: "~> 5.0"
+    state_backend: "gcs"
+    state_locking: "nativo en GCS (object versioning)"
+    secret_manager: "Google Secret Manager"
+    kms_service: "Cloud KMS"
+    iam_model: "IAM Bindings + Service Accounts"
+    network_primitive: "VPC (shared VPC para multi-proyecto)"
+    compliance_tool: "Security Command Center + Org Policies"
+    note: "GCP usa 'labels' en lugar de 'tags'. El campo es labels = {} no tags = {}"
+
+  azurerm:
+    source: "hashicorp/azurerm"
+    version_constraint: "~> 3.0"
+    state_backend: "azurerm (Azure Blob Storage)"
+    state_locking: "nativo via lease en blob"
+    secret_manager: "Azure Key Vault"
+    kms_service: "Azure Key Vault (CMK)"
+    iam_model: "Azure RBAC + Managed Identity"
+    network_primitive: "VNet + Subnets"
+    compliance_tool: "Azure Policy + Microsoft Defender for Cloud"
+
+# ─── CONVENCIONES DE NOMBRES ─────────────────────────────────────────────────
+naming:
+  global:
+    separator: "-"
+    case: "snake_case"          # Terraform usa snake_case internamente
+    max_length: 63
+    note: "Los nombres internos de Terraform usan snake_case. Los nombres de recursos cloud siguen las convenciones del provider."
+
+  resources:
+    terraform_resource:
+      pattern: "{tipo}_{proposito}_{ambiente}"
+      example: "storage_bucket_logs_dev"
+      validators:
+        - "snake_case"
+        - "sin_guiones"
+        - "incluye_ambiente"
+
+    module_directory:
+      pattern: "{prefix}-module-{dominio}-{proposito}"
+      example: "amx-module-data-storage"
+      validators:
+        - "kebab_case"
+        - "empieza_con_prefijo"
+        - "contiene_module"
+
+    state_backend_key:
+      pattern: "{proyecto}/{componente}/{ambiente}.tfstate"
+      example: "data-platform/ingestion/dev.tfstate"
+      validators:
+        - "tres_segmentos"
+        - "termina_en_tfstate"
+
+    workspace:
+      pattern: "{ambiente}-{region_abreviada}"
+      example: "prod-use1"
+      allowed_values:
+        ambientes: ["dev", "staging", "prod"]
+        regiones_aws:   ["use1", "usw2", "euw1", "sae1"]
+        regiones_gcp:   ["usce1", "use4", "euw1", "sae1"]
+        regiones_azure: ["eastus", "westus2", "westeurope", "brazilsouth"]
+
+    variable:
+      case: "snake_case"
+      example: "database_instance_type"
+      forbidden_names:
+        - "password"      # usar sensitive = true + secret manager del provider
+        - "secret"
+        - "token"
+        - "key"           # cuando es una credencial
+
+    output:
+      case: "snake_case"
+      pattern: "{recurso}_{atributo}"
+      examples:
+        aws:   "s3_bucket_arn"
+        gcp:   "gcs_bucket_name"
+        azure: "storage_account_id"
+
+    cloud_resource_name:
+      pattern: "{PREFIX}-{DOMINIO}-{PROPOSITO}-{AMBIENTE}"
+      example: "AMX-DATA-INGESTION-DEV"
+      case: "UPPER_CASE"
+      note: "Aplica al nombre display del recurso (Name tag en AWS, display name en GCP/Azure)"
+
+  labels_vs_tags:
+    aws:   "tags = {}"
+    gcp:   "labels = {}    # GCP no acepta el bloque 'tags' — usar labels"
+    azure: "tags = {}"
+
+# ─── ESTRUCTURA DE MÓDULOS ────────────────────────────────────────────────────
+structure:
+  required_files:
+    - file: "main.tf"
+      purpose: "Recursos principales del módulo"
+    - file: "variables.tf"
+      purpose: "Declaración de todas las variables de entrada"
+    - file: "outputs.tf"
+      purpose: "Declaración de todos los valores de salida"
+    - file: "versions.tf"
+      purpose: "required_version y required_providers con constraints"
+    - file: "README.md"
+      purpose: "Descripción, inputs, outputs y ejemplos de uso"
+
+  optional_files:
+    - file: "locals.tf"
+      purpose: "Valores calculados y aliases internos"
+    - file: "data.tf"
+      purpose: "Data sources separados de resources"
+    - file: "backend.tf"
+      purpose: "Configuración del backend remoto (solo en root modules)"
+
+  project_layout: |
+    {proyecto}/
+    ├── modules/                    # Módulos reutilizables internos
+    │   ├── {modulo-a}/
+    │   │   ├── main.tf
+    │   │   ├── variables.tf
+    │   │   ├── outputs.tf
+    │   │   ├── versions.tf
+    │   │   └── README.md
+    │   └── {modulo-b}/
+    │       └── ...
+    ├── environments/               # Root modules por ambiente
+    │   ├── dev/
+    │   │   ├── main.tf
+    │   │   ├── variables.tf
+    │   │   ├── outputs.tf
+    │   │   ├── versions.tf
+    │   │   ├── backend.tf
+    │   │   └── terraform.tfvars    # Valores no-sensitivos del ambiente
+    │   ├── staging/
+    │   │   └── ...
+    │   └── prod/
+    │       └── ...
+    ├── .terraform-version           # Versión exacta via tfenv/tenv
+    └── .tflint.hcl                  # Configuración del linter
+
+  environment_strategy:
+    recommended: "directory-per-environment"
+    reason: "Workspaces comparten state backend y pueden llevar a deploy accidental en prod"
+    workspace_allowed_for: ["dev", "staging"]
+    workspace_forbidden_for: ["prod"]
+
+# ─── SEGURIDAD ────────────────────────────────────────────────────────────────
+security:
+  version_pinning:
+    terraform_version:
+      required: true
+      constraint: "~> 1.5"
+      forbidden: [">= 0", "latest"]
+    provider_versions:
+      required: true
+      constraint_type: "pessimistic"    # Usar ~> (no >= sin upper bound)
+
+  state_backend:
+    remote_state: "requerido"
+    allowed_backends: ["s3", "gcs", "azurerm", "terraform-cloud"]
+    local_backend: "prohibido_en_staging_y_prod"
+    encryption: "requerido"
+    locking:
+      required: true
+      per_provider:
+        aws:   "DynamoDB table (atributo LockID)"
+        gcp:   "Nativo en GCS via object versioning — no requiere recurso extra"
+        azure: "Nativo via blob lease — no requiere recurso extra"
+    sensitive_state:
+      outputs_with_sensitive: true
+      state_file_access: "restringido_al_equipo_devops"
+
+  iam:
+    principle: "least_privilege — siempre"
+    wildcard_actions: "prohibido"
+    wildcard_resources: "prohibido_sin_condicion"
+    admin_access: "prohibido_en_codigo"
+    per_provider:
+      aws:
+        no_AdministratorAccess: true
+        no_star_actions: true
+        cross_account_roles:
+          require_external_id: true
+          require_condition: true
+        service_roles: "usar iam_role + iam_role_policy_attachment"
+      gcp:
+        no_roles_owner_hardcoded: true
+        service_accounts:
+          no_keys_on_disk: true           # Usar Workload Identity Federation en CI/CD
+          require_workload_identity: true
+        binding_vs_member: "preferir google_project_iam_binding sobre _member para auditabilidad"
+      azure:
+        no_Owner_role_assignment: true
+        managed_identity: "preferir sobre service principals con contraseña"
+        rbac_scope: "mínimo — preferir resource group scope sobre subscription scope"
+
+  secrets:
+    hardcoded_credentials: "prohibido"
+    sensitive_variables:
+      require_sensitive_flag: true
+      forbidden_defaults: true
+    per_provider:
+      aws:   "AWS Secrets Manager — nunca en tfvars commiteados"
+      gcp:   "Google Secret Manager — acceder con data.google_secret_manager_secret_version"
+      azure: "Azure Key Vault — acceder con data.azurerm_key_vault_secret"
+    forbidden_in_code:
+      - "access_key"
+      - "secret_key"
+      - "password ="
+      - "token ="
+      - "client_secret ="     # Azure service principal secret
+
+  network:
+    public_ip_on_instances: "prohibido_sin_justificacion"
+    open_ingress_0_0_0_0: "prohibido"
+    exceptions_ingress: ["puertos_80_443_con_waf"]
+    per_provider:
+      aws:   "VPC obligatoria — no default VPC en prod"
+      gcp:   "VPC obligatoria — preferir Shared VPC para multi-proyecto"
+      azure: "VNet obligatoria — usar Private Endpoints para servicios PaaS"
+    encryption_in_transit: "requerido — TLS 1.2 mínimo"
+
+  encryption:
+    at_rest: "requerido"
+    key_management: "customer-managed (CMEK/CMK)"
+    per_provider:
+      aws:
+        forbidden:
+          - "aws_s3_bucket sin server_side_encryption_configuration"
+          - "aws_rds_instance con storage_encrypted = false"
+          - "aws_ebs_volume con encrypted = false"
+        required: "KMS CMK — no SSE-S3"
+      gcp:
+        forbidden:
+          - "google_storage_bucket sin encryption.default_kms_key_name"
+          - "google_sql_database_instance sin disk_encryption_key"
+        required: "Cloud KMS CMEK"
+      azure:
+        forbidden:
+          - "azurerm_storage_account sin customer_managed_key"
+          - "azurerm_sql_database sin transparent_data_encryption"
+        required: "CMK via Azure Key Vault"
+
+  destructive_operations:
+    prevent_destroy_prod: "requerido"
+    force_destroy_prod: "prohibido"
+    terraform_destroy: "requiere_aprobacion_manual"
+
+# ─── TAGS / LABELS OBLIGATORIOS ──────────────────────────────────────────────
+tags:
+  note: "AWS y Azure usan 'tags'. GCP usa 'labels'. Las claves son las mismas."
+  required:
+    - key: "proyecto"
+      description: "Nombre del proyecto o producto"
+    - key: "dominio"
+      description: "Dominio de negocio (data, pagos, clientes, etc.)"
+    - key: "ambiente"
+      allowed_values: ["dev", "staging", "prod"]
+    - key: "owner"
+      description: "Equipo o persona responsable"
+    - key: "centro-costo"
+      description: "Para reporte de costos cloud"
+    - key: "gestionado-por"
+      value: "terraform"
+    - key: "repo"
+      description: "URL del repositorio fuente"
+    - key: "clasificacion-datos"
+      allowed_values: ["publico", "interno", "confidencial", "pii", "restringido"]
+
+  enforcement:
+    builder_rule: "Todo recurso DEBE incluir tags/labels requeridos via locals + merge(). GCP: usar labels = merge(...), AWS/Azure: usar tags = merge(...)."
+    examples:
+      aws_and_azure: |
+        locals {
+          common_tags = {
+            proyecto          = var.proyecto
+            dominio           = var.dominio
+            ambiente          = var.ambiente
+            owner             = var.owner
+            "centro-costo"    = var.centro_costo
+            "gestionado-por"  = "terraform"
+            repo              = var.repo_url
+            "clasificacion-datos" = var.clasificacion_datos
+          }
+        }
+        resource "aws_s3_bucket" "ejemplo" {
+          bucket = local.bucket_name
+          tags   = merge(local.common_tags, { proposito = "raw-ingestion" })
+        }
+      gcp: |
+        locals {
+          common_labels = {
+            proyecto             = var.proyecto
+            dominio              = var.dominio
+            ambiente             = var.ambiente
+            owner                = var.owner
+            centro-costo         = var.centro_costo
+            gestionado-por       = "terraform"
+            clasificacion-datos  = var.clasificacion_datos
+          }
+        }
+        resource "google_storage_bucket" "ejemplo" {
+          name   = local.bucket_name
+          labels = merge(local.common_labels, { proposito = "raw-ingestion" })
+        }
+
+# ─── AMBIENTES ───────────────────────────────────────────────────────────────
+environments:
+  allowed: ["dev", "staging", "prod"]
+  constraints:
+    dev:
+      auto_deploy: true
+      approval_required: false
+      plan_required: true
+    staging:
+      auto_deploy: true
+      approval_required: false
+      plan_required: true
+      mirrors_prod_config: true
+    prod:
+      auto_deploy: false
+      approval_required: true
+      approvers: ["tech-lead", "equipo-infraestructura"]
+      plan_required: true
+      plan_review_required: true
+      requires_compliance_report: true
+      change_window: "lunes-viernes 09:00-17:00 UTC-6"
+
+# ─── ESCANEO Y VALIDACIÓN ────────────────────────────────────────────────────
+scanning:
+  pre_commit:
+    required:
+      - tool: "terraform fmt"
+        purpose: "Formato canónico de HCL"
+        fail_on: "any_diff"
+        command: "terraform fmt -check -recursive"
+
+      - tool: "terraform validate"
+        purpose: "Validación de sintaxis y referencias"
+        fail_on: "any_error"
+        command: "terraform validate"
+
+      - tool: "tflint"
+        purpose: "Linting de mejores prácticas y errores de provider"
+        fail_on: "error"
+        config: ".tflint.hcl"
+        plugins:
+          aws:   "tflint-ruleset-aws"
+          gcp:   "tflint-ruleset-google"
+          azure: "tflint-ruleset-azurerm"
+
+      - tool: "gitleaks"
+        purpose: "Detección de secretos en código"
+        fail_on: "any"
+
+  pre_deploy:
+    required:
+      - tool: "checkov"
+        purpose: "Seguridad y compliance de recursos IaC"
+        fail_on: "high"
+        command: "checkov -d . --framework terraform"
+        covers: ["aws", "gcp", "azure"]
+
+      - tool: "tfsec"
+        purpose: "Seguridad específica de Terraform"
+        fail_on: "high"
+        command: "tfsec ."
+        covers: ["aws", "gcp", "azure"]
+
+      - tool: "terraform plan"
+        purpose: "Plan explícito antes de cualquier apply"
+        fail_on: "error"
+        save_plan: true
+        review_required_for: ["prod"]
+
+    recommended:
+      - tool: "infracost"
+        purpose: "Estimación de costo antes del apply"
+        alert_on: "incremento > 20%"
+        covers: ["aws", "gcp", "azure"]
+
+  post_deploy:
+    recommended:
+      - tool: "terraform plan"
+        schedule: "diario"
+        purpose: "Detección de drift"
+        alert_on: "any_diff"
+
+      - tool: "cloud compliance"
+        per_provider:
+          aws:   "AWS Config + Security Hub"
+          gcp:   "Security Command Center"
+          azure: "Microsoft Defender for Cloud + Azure Policy"
+        schedule: "continuo"
+
+# ─── PATRONES DE ARQUITECTURA ────────────────────────────────────────────────
+architecture:
+  patterns:
+    modules_composition:
+      when:
+        - "infraestructura reutilizable entre proyectos o equipos"
+        - "patrones de red, seguridad o datos estandarizados"
+      constraints:
+        - "módulos internos versionados por git tag semver"
+        - "inputs documentados con description en cada variable"
+        - "outputs documentados con description en cada output"
+        - "módulo sin side-effects: no crea recursos fuera de su scope"
+
+    environment_isolation:
+      when: "siempre — no hay excepciones"
+      constraints:
+        - "cada ambiente tiene su propio state file"
+        - "prod nunca comparte backend con dev"
+        - "credenciales de prod en secret manager separado"
+
+    remote_modules:
+      when: "módulo estable y aprobado por el equipo de plataforma"
+      constraints:
+        - "siempre pinear version del módulo"
+        - "módulos públicos del Terraform Registry: solo versiones auditadas"
+
+  forbidden:
+    - pattern: "local backend en staging/prod"
+      reason: "sin locking — riesgo de state corruption"
+
+    - pattern: "terraform apply sin plan previo"
+      reason: "cambios no revisados pueden destruir recursos en prod"
+
+    - pattern: "hardcodear IDs de cuenta/proyecto/suscripción"
+      reason: "el código debe ser portable — usar data sources"
+      per_provider:
+        aws:   "data.aws_caller_identity.current.account_id"
+        gcp:   "data.google_project.current.project_id"
+        azure: "data.azurerm_client_config.current.subscription_id"
+
+    - pattern: "count para recursos que difieren significativamente"
+      reason: "count genera índices que cambian al eliminar elementos; usar for_each con map"
+
+    - pattern: "módulo sin README.md"
+      reason: "sin documentación no puede ser usado por otros equipos"
+
+    - pattern: "outputs sensibles sin sensitive = true"
+      reason: "contraseñas y tokens quedarían en texto plano en logs del CI"
+
+    - pattern: "service account keys en GCP descargadas a disco"
+      reason: "usar Workload Identity Federation — las keys son un vector de ataque permanente"
+
+    - pattern: "Managed Identity deshabilitada en Azure"
+      reason: "sin Managed Identity se necesitan secrets de service principal — mayor superficie de ataque"
+
+# ─── CONSTRAINTS PARA EL BUILDER ─────────────────────────────────────────────
+builder_constraints:
+  always_include:
+    versions_tf:
+      aws: |
+        terraform {
+          required_version = "~> 1.5"
+          required_providers {
+            aws = {
+              source  = "hashicorp/aws"
+              version = "~> 5.0"
+            }
+          }
+        }
+      gcp: |
+        terraform {
+          required_version = "~> 1.5"
+          required_providers {
+            google = {
+              source  = "hashicorp/google"
+              version = "~> 5.0"
+            }
+          }
+        }
+      azure: |
+        terraform {
+          required_version = "~> 1.5"
+          required_providers {
+            azurerm = {
+              source  = "hashicorp/azurerm"
+              version = "~> 3.0"
+            }
+          }
+        }
+        provider "azurerm" {
+          features {}
+        }
+
+    variable_with_validation: |
+      variable "ambiente" {
+        description = "Ambiente de despliegue (dev, staging, prod)"
+        type        = string
+        validation {
+          condition     = contains(["dev", "staging", "prod"], var.ambiente)
+          error_message = "El ambiente debe ser dev, staging o prod."
+        }
+      }
+
+    sensitive_variable: |
+      variable "db_password" {
+        description = "Contraseña de la base de datos — leer desde secret manager"
+        type        = string
+        sensitive   = true
+      }
+
+    output_with_description: |
+      output "storage_id" {
+        description = "ID o ARN del recurso de almacenamiento principal"
+        value       = <referencia_al_recurso>
+      }
+
+    prevent_destroy_prod: |
+      lifecycle {
+        prevent_destroy = true
+      }
+
+  never_generate:
+    - "default = <valor_secreto>"
+    - 'cidr_blocks = ["0.0.0.0/0"]'       # AWS/Azure ingress abierto
+    - 'source_ranges = ["0.0.0.0/0"]'     # GCP firewall ingress abierto
+    - "backend \"local\""                  # en staging/prod
+    - "version = latest"
+    - "source = módulo_sin_version"
+    - "google_service_account_key"         # GCP — usar Workload Identity
+    - "client_secret = valor_literal"      # Azure SP secret hardcodeado
+
+# ─── DEPLOYMENT ──────────────────────────────────────────────────────────────
+deployment:
+  workflow:
+    steps:
+      - step: "terraform fmt -check"
+        blocking: true
+      - step: "terraform validate"
+        blocking: true
+      - step: "tfsec + checkov"
+        blocking: true
+        fail_threshold: "high"
+      - step: "terraform plan -out=tfplan"
+        blocking: true
+      - step: "revisión humana del plan"
+        blocking: true
+        required_for: ["prod"]
+      - step: "terraform apply tfplan"
+        blocking: true
+        note: "Siempre apply desde el plan guardado, nunca apply directo"
+
+  rollback:
+    strategy: "revert commit + apply estado anterior"
+    automated: false
+    note: "Terraform no tiene rollback automático — mantener historial de state"
+
+  compliance:
+    require_report_before_deploy: true
+    require_all_scans_passed: true
+    require_plan_artifact: true
+
+# ─── GUARDIAN — VALIDACIONES DE COMPLIANCE ───────────────────────────────────
+guardian_checks:
+  - id: "TF-SEC-001"
+    description: "Todos los recursos tienen tags/labels requeridos"
+    check: "grep -r 'gestionado-por' --include='*.tf' | wc -l > 0"
+    severity: "high"
+
+  - id: "TF-SEC-002"
+    description: "No hay credenciales hardcodeadas"
+    check: "gitleaks detect --source ."
+    severity: "critical"
+
+  - id: "TF-SEC-003"
+    description: "versions.tf existe en cada módulo y environment"
+    check: "find . -name main.tf | xargs -I{} sh -c 'test -f $(dirname {})/versions.tf'"
+    severity: "high"
+
+  - id: "TF-SEC-004"
+    description: "No hay backend local en staging/prod"
+    check: 'grep -r "backend \"local\"" environments/staging environments/prod'
+    severity: "critical"
+    expected: "sin resultados"
+
+  - id: "TF-SEC-005"
+    description: "Outputs sensibles tienen sensitive = true"
+    check: "tfsec . --include-passed"
+    severity: "high"
+
+  - id: "TF-GCP-001"
+    description: "No hay google_service_account_key (usar Workload Identity)"
+    check: 'grep -r "google_service_account_key" --include="*.tf"'
+    severity: "critical"
+    expected: "sin resultados"
+    applies_to: ["gcp"]
+
+  - id: "TF-AZ-001"
+    description: "Managed Identity habilitada en todos los recursos Azure que la soportan"
+    check: "checkov -d . --check CKV_AZURE_103"
+    severity: "high"
+    applies_to: ["azure"]
+
+  - id: "TF-IAC-001"
+    description: "checkov no reporta findings HIGH o CRITICAL"
+    check: "checkov -d . --framework terraform --compact"
+    severity: "high"
+
+  - id: "TF-IAC-002"
+    description: "Módulos tienen README.md"
+    check: "find modules/ -maxdepth 1 -mindepth 1 -type d | xargs -I{} test -f {}/README.md"
+    severity: "medium"

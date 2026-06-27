@@ -209,10 +209,11 @@ Tu agente AI ahora tiene:
 
 | Estoy construyendo... | Empieza con |
 |----------------------|-------------|
-| Pipelines de datos en AWS | `examples/profiles/data-aws.yaml` |
-| APIs REST | `examples/profiles/api-rest.yaml` |
-| Apps web (React/Next.js) | `examples/profiles/webapp-react.yaml` |
-| Infraestructura (Terraform/CDK) | `examples/profiles/infra-iac.yaml` |
-| Apps móviles | `examples/profiles/mobile.yaml` |
+| Pipelines de datos en GCP | `profiles/data-gcp.yaml` |
+| Pipelines de datos en Azure | `profiles/data-azure.yaml` |
+| Pipelines de datos en AWS | `profiles/data-aws.yaml` |
+| IaC con Terraform (multi-cloud) | `profiles/infra-terraform.yaml` |
+| APIs REST | `profiles/api-rest.yaml` |
+| Apps web (React/Next.js) | `profiles/webapp-react.yaml` |
 
 Cada perfil es un contrato de governance pre-configurado que puedes usar tal cual o personalizar.

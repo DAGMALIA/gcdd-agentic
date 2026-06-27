@@ -148,6 +148,9 @@ Ver la [guía completa de inicio rápido](docs/INICIO-RAPIDO.md).
 
 | Perfil | Dominio | Estado |
 |--------|---------|--------|
+| [infra-terraform](profiles/infra-terraform.yaml) | IaC con Terraform (AWS · GCP · Azure) | ✅ Disponible |
+| [data-gcp](profiles/data-gcp.yaml) | Ingeniería de Datos en GCP | ✅ Disponible |
+| [data-azure](profiles/data-azure.yaml) | Ingeniería de Datos en Azure | ✅ Disponible |
 | [data-aws](profiles/data-aws.yaml) | Ingeniería de Datos en AWS | 🚧 En desarrollo |
 | [api-rest](profiles/api-rest.yaml) | APIs REST | 🚧 En desarrollo |
 | [webapp-react](profiles/webapp-react.yaml) | Aplicaciones Web React | 🚧 En desarrollo |

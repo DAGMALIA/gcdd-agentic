@@ -40,7 +40,8 @@ documentación — es código que los validadores y herramientas consumen direct
 
 Contiene: naming, security, architecture, domains, tags, environments, scanning, deployment.
 
-Lee `references/governance-contract.md` para la estructura completa y ejemplos.
+Lee `references/governance-contract.md` (en el directorio del skill) para la estructura completa
+y ejemplos.
 
 ### 2. Generación Constrañida
 Las restricciones se codifican en las **herramientas**, no en los **prompts**. Un agente al
@@ -56,11 +57,21 @@ Flujo GCDD: Governance → Spec → AI genera a través de tools gobernados → 
 Implementaciones concretas del contrato de governance para industrias o tecnologías específicas.
 GCDD es la metodología; los perfiles son cómo se adopta.
 
-Perfiles disponibles en `references/profiles/`:
-- `data-aws.md` — Ingeniería de datos en AWS
-- `api-rest.md` — APIs REST con OWASP
-- `webapp-react.md` — Aplicaciones web React
-- `infra-k8s.md` — Infraestructura Kubernetes
+Los perfiles se encuentran en `profiles/` en la raíz del proyecto (no en el directorio del skill).
+Un perfil ✅ está completo y listo para usar. Un perfil 🚧 es un stub — úsalo como punto de partida pero completar las secciones faltantes.
+
+**Perfiles disponibles (✅ completos):**
+- `profiles/data-azure.yaml` — Ingeniería de datos en Azure (ADLS Gen2, ADF, Synapse, Databricks)
+- `profiles/data-gcp.yaml` — Ingeniería de datos en GCP (BigQuery, GCS, Pub/Sub, Dataflow)
+- `profiles/infra-terraform.yaml` — Infraestructura como código Terraform (multi-cloud AWS/GCP/Azure)
+
+**Perfiles en desarrollo (🚧 stubs, contribuciones bienvenidas):**
+- `profiles/data-aws.yaml` — Ingeniería de datos en AWS (S3, Glue, Step Functions)
+- `profiles/api-rest.yaml` — APIs REST con OWASP API Top 10
+- `profiles/webapp-react.yaml` — Aplicaciones web React
+- `profiles/infra-k8s.yaml` — Infraestructura Kubernetes
+- `profiles/fintech.yaml` — Fintech (PCI-DSS, cumplimiento financiero)
+- `profiles/healthcare.yaml` — Salud (HIPAA, PHI)
 
 ### 4. Especialización de Agentes por Acceso a Herramientas
 Cada rol tiene una whitelist de herramientas. El enforcement es por infraestructura (el
@@ -139,8 +150,8 @@ compliance + audit trail + múltiples aprobaciones.
 ## Motor de Selección de Arquitectura
 
 El agente NO inventa una arquitectura — la selecciona de un catálogo gobernado según las
-características del proyecto. Lee `references/architecture-catalog.md` para el catálogo
-completo con reglas de selección.
+características del proyecto. Lee `references/architecture-catalog.md` (en el directorio del skill)
+para el catálogo completo con reglas de selección.
 
 Resumen rápido:
 - **Hexagonal** → lógica de dominio compleja, 3+ integraciones, testing prioritario
@@ -152,7 +163,8 @@ Resumen rápido:
 ## Seguridad: OWASP y más allá
 
 GCDD trata seguridad como governance de primera clase. Lee `references/security-policies.md`
-para las reglas completas de OWASP API Top 10, Web Top 10, y políticas de escaneo.
+(en el directorio del skill) para las reglas completas de OWASP API Top 10, Web Top 10, y
+políticas de escaneo.
 
 Principio central: el Builder genera código que ya sigue el `builder_constraint` de cada
 categoría OWASP. No se genera y después se escanea — se genera conforme desde el inicio.
@@ -165,13 +177,85 @@ Lee `references/implementation-guide.md` para guías específicas por plataforma
 - Cursor / VS Code
 - GitHub Copilot
 
+## Protocolo de Comportamiento de Claude
+
+Esta sección es la guía operativa. Todo lo anterior es la teoría — aquí está lo que Claude
+hace en la práctica cuando este skill está activo.
+
+### Paso 0: Detectar el contexto (siempre, al inicio de cualquier tarea)
+
+1. Buscar `.gcdd/governance/contract.yaml` en la raíz del proyecto
+2. Si existe → leerlo COMPLETO antes de generar cualquier artefacto
+3. Si NO existe → ver "Modo: Proyecto Nuevo" más abajo
+
+### Modo: Proyecto Nuevo (sin contrato de governance)
+
+Cuando no existe `.gcdd/governance/contract.yaml`:
+
+1. Preguntar al usuario: "Este proyecto no tiene un contrato de governance GCDD. ¿Quieres que lo configure?"
+2. Detectar el dominio (preguntar si no es obvio por el código existente)
+3. Recomendar el perfil ✅ completo de `profiles/` más adecuado; si ninguno aplica, usar la
+   plantilla en `templates/governance-contract.yaml`
+4. Crear `.gcdd/governance/contract.yaml` personalizado
+5. Crear o actualizar `CLAUDE.md` en la raíz con las reglas de governance
+6. Informar al usuario qué se creó y qué secciones debe revisar/personalizar
+
+### Modo: Proyecto Existente (con contrato de governance)
+
+En cada tarea de generación de código:
+
+**Antes de generar:**
+- Leer la sección relevante del contrato: `naming`, `security`, `architecture`
+- Si es una feature nueva → confirmar con el usuario qué patrón de arquitectura aplica (seleccionar
+  del catálogo, no inventar)
+
+**Al generar cada artefacto:**
+- Aplicar el `naming` pattern del contrato para cada tipo de recurso
+- Incluir los `tags`/`labels` requeridos en todos los recursos
+- Aplicar las `security` constraints del perfil (encriptación, auth, network)
+- Si el perfil tiene `builder_constraints.always_include` → incluirlos
+- Nunca generar lo que esté en `builder_constraints.never_generate`
+
+**Al finalizar la tarea — Checklist de Compliance:**
+Antes de declarar cualquier tarea completada, verificar explícitamente:
+- [ ] Nombres de recursos siguen el patrón del contrato (`naming.resources`)
+- [ ] Todos los recursos tienen los tags/labels requeridos (`tags.required`)
+- [ ] Sin credenciales hardcodeadas (secrets, keys, tokens, passwords)
+- [ ] Configuraciones de seguridad cumplen constraints del perfil
+- [ ] Arquitectura sigue el patrón seleccionado
+- [ ] Listar los escaneos que el usuario debe ejecutar manualmente (de `scanning.pre_commit`)
+
+### Modo: Agente Único (Claude Code sin multi-agente)
+
+La mayoría de usuarios usa Claude Code como agente único. En este modo, Claude asume
+secuencialmente todos los roles en cada tarea:
+
+| Momento | Rol que asume | Qué hace |
+|---------|--------------|----------|
+| Inicio de tarea | Navigator | Lee el contrato, identifica qué reglas aplican |
+| Antes de implementar | Specifier | Confirma arquitectura si es feature nueva |
+| Durante implementación | Builder | Genera código conforme por construcción |
+| Al terminar | Steward | Verifica naming y tags |
+| Al terminar | Guardian | Lista escaneos pendientes que el usuario debe correr |
+
+No intentar configurar un servidor MCP ni multi-agente a menos que el usuario lo pida
+explícitamente. El valor de GCDD se obtiene incluso con Claude como agente único.
+
+---
+
 ## Comenzar un proyecto con GCDD
 
 Cuando el usuario quiera iniciar un proyecto con GCDD:
 
-1. Genera `governance-contract.yaml` usando la plantilla en `templates/governance-contract.yaml`
-   Pregunta al usuario sobre su dominio, naming, seguridad, arquitectura preferida
-2. Crea la constitución del proyecto (CLAUDE.md, .cursorrules, etc.)
-3. Genera los validadores iniciales (naming.py, security.py)
-4. Define los roles necesarios (mínimo: Specifier + Builder + Steward)
-5. Configura las capas de enforcement
+1. **Seleccionar perfil**: Si existe un perfil ✅ completo en `profiles/` que aplique al dominio del
+   usuario, úsalo directamente — ya tiene naming, seguridad y escaneo definidos. Si no existe un
+   perfil completo, usa la plantilla en `templates/governance-contract.yaml` (dentro del directorio
+   del skill) como punto de partida y pregunta al usuario sobre su dominio, naming y seguridad.
+
+2. **Crear el governance-contract**: Genera `.gcdd/governance/contract.yaml` en la raíz del
+   proyecto del usuario, personalizado con el perfil o plantilla del paso anterior.
+
+3. Crea `CLAUDE.md` en la raíz del proyecto referenciando el contrato.
+4. Genera los validadores iniciales (`.gcdd/validators/naming.py`, `security.py`) si el usuario los necesita.
+5. Define los roles necesarios (mínimo: Specifier + Builder + Steward) solo si se requiere multi-agente.
+6. Configura las capas de enforcement según la guía en `references/implementation-guide.md`.
